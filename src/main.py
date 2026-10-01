@@ -1,9 +1,6 @@
 import asyncio
 from urllib.parse import parse_qs, urlparse
 
-from langchain_cloudflare import ChatCloudflareWorkersAI
-from langchain_core.output_parsers import StrOutputParser
-from langchain_core.prompts import PromptTemplate
 from workers import Response, WorkerEntrypoint
 
 MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
@@ -32,6 +29,11 @@ class Default(WorkerEntrypoint):
         if len(profession) != 1 or profession[0] not in PROFESSIONS or len(style) != 1 or style[0] not in STYLES:
             return response({"error": "Choose one allowed profession and style", "professions": PROFESSIONS, "styles": STYLES}, 400)
         values = {"profession": profession[0], "style": style[0]}
+        # Keep deployment snapshots and health checks lightweight. Import the
+        # patched LangChain modules only on routes that use them; Python caches
+        # imports after the first use in each isolate.
+        from langchain_core.prompts import PromptTemplate
+
         prompt = PromptTemplate.from_template(PROMPT)
         if url.path == "/prompt":
             return response({"prompt": prompt.format(**values), "model": MODEL, "inference": False})
@@ -41,6 +43,9 @@ class Default(WorkerEntrypoint):
         limited = await self.env.INFERENCE_LIMITER.limit({"key": key})
         if not limited["success"]:
             return response({"error": "Inference limit reached; retry in a minute"}, 429, {"Retry-After": "60"})
+        from langchain_cloudflare import ChatCloudflareWorkersAI
+        from langchain_core.output_parsers import StrOutputParser
+
         llm = ChatCloudflareWorkersAI(model_name=MODEL, binding=self.env.AI, max_tokens=64)
         chain = prompt | llm | StrOutputParser()
         try:
